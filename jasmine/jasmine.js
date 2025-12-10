@@ -362,27 +362,38 @@ function toPicture(imageName, chapterId, index, cdnHost) {
  */
 async function getCategories() {
     try {
-        const data = await apiRequest('categories', 'GET');
-        console.log('[jasmine] categories API response type: ' + typeof data);
-        console.log('[jasmine] categories API response: ' + JSON.stringify(data).substring(0, 500));
+        const raw = await apiRequest('categories', 'GET');
+        console.log('[jasmine] categories API response type:', typeof raw);
 
-        // API 可能直接返回数组
+        // 兼容字符串返回
+        let data = raw;
+        if (typeof raw === 'string') {
+            try {
+                data = JSON.parse(raw);
+            } catch (e) {
+                console.warn('[jasmine] categories: JSON.parse failed, using raw string');
+            }
+        }
+
+        // 抽取 categories 列表，支持多种结构
         let categories = [];
         if (Array.isArray(data)) {
             categories = data;
-        } else if (data && data.categories) {
+        } else if (data && Array.isArray(data.categories)) {
             categories = data.categories;
-        } else if (data && data.list) {
+        } else if (data && data.data && Array.isArray(data.data.categories)) {
+            categories = data.data.categories;
+        } else if (data && Array.isArray(data.list)) {
             categories = data.list;
         }
 
-        console.log('[jasmine] found ' + categories.length + ' categories from API');
+        console.log('[jasmine] categories parsed length:', categories.length);
 
         const result = [];
-
-        // 添加"全部"分类
+        // 添加"全部"分类（slug 为空字符串）
         result.push({
             id: '',
+            slug: '',
             title: '全部',
             description: '',
             thumb: null,
@@ -391,12 +402,18 @@ async function getCategories() {
             link: null
         });
 
-        // 添加服务器分类
         for (const cat of categories) {
+            // 统一字段，确保类型正确
+            const id = cat.id != null ? String(cat.id) : (cat.slug || '');
+            const slug = cat.slug != null ? String(cat.slug) : '';
+            const title = String(cat.name || cat.title || '');
+            const desc = String(cat.description || '');
+
             result.push({
-                id: cat.slug || cat.id?.toString() || '',
-                title: cat.name || cat.title || '',
-                description: cat.description || '',
+                id: id,
+                slug: slug,
+                title: title,
+                description: desc,
                 thumb: null,
                 is_web: false,
                 active: true,
@@ -406,10 +423,11 @@ async function getCategories() {
 
         return result;
     } catch (e) {
-        console.log('[jasmine] getCategories error: ' + e.message);
+        console.log('[jasmine] getCategories error:', e.message);
         // API 错误时返回默认分类
         return [{
             id: '',
+            slug: '',
             title: '全部',
             description: '',
             thumb: null,
