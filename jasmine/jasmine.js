@@ -346,7 +346,12 @@ function toPicture(imageName, chapterId, index, cdnHost) {
     const url = getPageImageUrl(chapterId, imageName, cdnHost);
     return {
         id: `${chapterId}_${index}`,
-        media: toRemoteImageInfo(url)
+        media: toRemoteImageInfo(url),
+        // 添加元数据，用于图片处理
+        metadata: {
+            chapterId: String(chapterId),
+            imageName: String(imageName)
+        }
     };
 }
 
@@ -757,26 +762,35 @@ async function processImage(args) {
     const { imageData, params } = args;
     const { chapterId, imageName } = params || {};
 
+    console.log('[jasmine] processImage called, chapterId:', chapterId, 'imageName:', imageName);
+    console.log('[jasmine] params:', JSON.stringify(params));
+
     // 如果没有提供必要的参数，返回原始数据
     if (!chapterId || !imageName) {
+        console.log('[jasmine] processImage: missing params, returning original image');
         return { imageData: imageData };
     }
 
     try {
         // 将 chapterId 转换为数字
         const pageImageFlag = parseInt(chapterId, 10) || 0;
+        console.log('[jasmine] processImage: pageImageFlag =', pageImageFlag);
 
         // 如果 pageImageFlag <= 220980，直接返回原始数据
         if (pageImageFlag <= 220980) {
+            console.log('[jasmine] processImage: pageImageFlag <= 220980, returning original image');
             return { imageData: imageData };
         }
 
         // 获取图片信息（宽高、格式）
+        console.log('[jasmine] processImage: getting image info...');
         const infoJson = runtime.image.getInfo(imageData);
         const info = JSON.parse(infoJson);
+        console.log('[jasmine] processImage: image info - width:', info.width, 'height:', info.height, 'format:', info.format);
 
         // 如果是 GIF，直接返回原始数据
         if (info.format === 'gif') {
+            console.log('[jasmine] processImage: GIF format, returning original image');
             return { imageData: imageData };
         }
 
@@ -784,27 +798,54 @@ async function processImage(args) {
         let rows;
         if (pageImageFlag < 268850) {
             rows = 10;
+            console.log('[jasmine] processImage: pageImageFlag < 268850, using rows = 10');
         } else {
             // 根据 MD5 计算行数
-            const imageNameWithoutExt = imageName.split('.').slice(0, -1).join('.');
-            const md5Hash = runtime.crypto.md5(pageImageFlag + imageNameWithoutExt);
-            // MD5 返回的是十六进制字符串，取最后一个字符
+            // Rust 代码：page_image_flag2.split(".").nth(0).unwrap()
+            // split(".").nth(0) 取第一个点之前的部分（如果没有点，返回整个字符串）
+            // 在 JS 中，split('.')[0] 也是取第一个点之前的部分
+            const imageNameWithoutExt = imageName.split('.')[0];
+            const md5Input = String(pageImageFlag) + imageNameWithoutExt;
+            const md5Hash = runtime.crypto.md5(md5Input);
+            
+            // Rust 代码逻辑：
+            // let hex = hex::encode(md5.as_ref());  // 将 MD5 字节数组编码为十六进制字符串
+            // let bytes = hex.as_bytes();           // 将字符串转换为 UTF-8 字节数组
+            // let byte = bytes[bytes.len() - 1];    // 取最后一个字节（最后一个字符的 ASCII 码）
+            // 
+            // 例如：hex = "eca12013d6c8913407cd3c87650ac901"
+            // bytes 是字符串的 UTF-8 字节，最后一个字节是 '1' 的 ASCII 码 = 49
+            // (49 as i64) % 10 = 9, 然后 9 * 2 + 2 = 20
+            //
+            // 但是，如果我们直接取最后一个十六进制字符 '1'，转换为数值是 1
+            // 1 % 10 = 1, 1 * 2 + 2 = 4
+            //
+            // 这说明 Rust 代码使用的是 ASCII 码值，而不是十六进制字符的数值
+            // 所以我们需要取最后一个字符的 ASCII 码值
             const lastChar = md5Hash[md5Hash.length - 1];
-            const byteValue = parseInt(lastChar, 16);
-
+            const lastCharCode = lastChar.charCodeAt(0);  // 获取字符的 ASCII 码
+            
+            // 使用 ASCII 码值进行计算（与 Rust 代码一致）
+            let byteValue;
             if (pageImageFlag <= 421925) {
-                rows = ((byteValue % 10) * 2 + 2);
+                byteValue = (lastCharCode % 10);
             } else {
-                rows = ((byteValue % 8) * 2 + 2);
+                byteValue = (lastCharCode % 8);
             }
+            rows = (byteValue * 2 + 2);
+            
+            console.log('[jasmine] processImage: calculated rows =', rows, 'from md5 input:', md5Input, 'md5:', md5Hash, 'lastChar:', lastChar, 'charCode:', lastCharCode, 'byteValue:', byteValue);
         }
 
         // 使用 Rust API 重新排列图片行
+        console.log('[jasmine] processImage: rearranging image rows...');
         const processedImageData = runtime.image.rearrangeRows(imageData, rows);
+        console.log('[jasmine] processImage: image rearranged successfully, processed data length:', processedImageData.length);
 
         return { imageData: processedImageData };
     } catch (e) {
-        console.error('[jasmine] processImage error: ' + e.message);
+        console.error('[jasmine] processImage error:', e.message);
+        console.error('[jasmine] processImage error stack:', e.stack);
         // 处理失败，返回原始数据
         return { imageData: imageData };
     }
