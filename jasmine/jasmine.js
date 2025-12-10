@@ -516,8 +516,17 @@ async function getComicDetail(params) {
     const comicId = params?.comicId || params?.comic_id || '';
 
     const data = await apiRequest('album', 'GET', { id: comicId });
+    
+    // 如果返回的是字符串，需要解析为 JSON 对象
+    let album;
+    if (typeof data === 'string') {
+        album = JSON.parse(data);
+    } else {
+        album = data;
+    }
+    
     const cdnHost = await getCdnHost();
-    return toComicDetail(data, cdnHost);
+    return toComicDetail(album, cdnHost);
 }
 
 /**
@@ -529,7 +538,16 @@ async function getEps(params) {
 
     // 获取漫画详情来获取系列列表
     const data = await apiRequest('album', 'GET', { id: comicId });
-    const series = data.series || [];
+    
+    // 如果返回的是字符串，需要解析为 JSON 对象
+    let album;
+    if (typeof data === 'string') {
+        album = JSON.parse(data);
+    } else {
+        album = data;
+    }
+    
+    const series = album.series || [];
 
     // 如果没有系列，创建一个默认章节
     if (series.length === 0) {
@@ -568,7 +586,16 @@ async function getPictures(params) {
     const chapterId = epId || comicId;
 
     const data = await apiRequest('chapter', 'GET', { id: chapterId });
-    const images = data.images || [];
+    
+    // 如果返回的是字符串，需要解析为 JSON 对象
+    let chapter;
+    if (typeof data === 'string') {
+        chapter = JSON.parse(data);
+    } else {
+        chapter = data;
+    }
+    
+    const images = chapter.images || [];
 
     const cdnHost = await getCdnHost();
     const docs = images.map((img, i) => toPicture(img, chapterId, i, cdnHost));
@@ -597,8 +624,17 @@ async function search(params) {
     };
 
     const data = await apiRequest('search', 'GET', requestParams);
-    const content = data.content || [];
-    const total = data.total || content.length;
+    
+    // 如果返回的是字符串，需要解析为 JSON 对象
+    let searchResult;
+    if (typeof data === 'string') {
+        searchResult = JSON.parse(data);
+    } else {
+        searchResult = data;
+    }
+    
+    const content = searchResult.content || [];
+    const total = searchResult.total || content.length;
 
     const cdnHost = await getCdnHost();
     const docs = content.map(comic => toComicSimple(comic, cdnHost));
