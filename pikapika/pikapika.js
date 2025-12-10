@@ -14,7 +14,10 @@ const moduleInfo = {
     version: '1.0.0',
     author: 'comics',
     description: '哔咔漫画 (PicACG) 数据源，需要登录账号',
-    icon: null
+    icon: null,
+    features: {
+        authForm: true
+    }
 };
 
 // API 常量
@@ -78,15 +81,16 @@ function generateSignature(path, method, time) {
  * 获取API URL
  * 如果 USE_SWITCH 为 true，使用分流IP；否则直接使用域名
  */
-const USE_SWITCH = false;  // 设为 false 直接访问域名，设为 true 使用分流IP
+let USE_SWITCH = false;  // 可通过表单配置
+let CURRENT_SWITCH = DEFAULT_SWITCH;
+let CUSTOM_SWITCH_IP = '';
 
 function getApiUrl(path) {
     if (USE_SWITCH) {
-        const switchIp = SWITCH_ADDRESSES[DEFAULT_SWITCH] || SWITCH_ADDRESSES[3];
+        const switchIp = CUSTOM_SWITCH_IP || SWITCH_ADDRESSES[CURRENT_SWITCH] || SWITCH_ADDRESSES[3];
         return `https://${switchIp}/${path}`;
-    } else {
-        return `https://${API_HOST}/${path}`;
     }
+    return `https://${API_HOST}/${path}`;
 }
 
 /**
@@ -161,6 +165,18 @@ async function isTokenValid() {
  */
 async function preLogin() {
     console.log('[pikapika] preLogin called');
+    // 初始化分流设置
+    try {
+        const use = await runtime.storage.get('pikapika_use_switch');
+        USE_SWITCH = use === '1' || use === true || use === 'true';
+        const idx = await runtime.storage.get('pikapika_switch');
+        if (idx) {
+            const n = parseInt(idx);
+            if (!isNaN(n)) CURRENT_SWITCH = n;
+        }
+        const ip = await runtime.storage.get('pikapika_switch_ip');
+        if (ip) CUSTOM_SWITCH_IP = ip;
+    } catch (e) { console.log('[pikapika] init switch failed:', e.message); }
     // 检查现有 token 是否有效
     if (await isTokenValid()) {
         console.log('[pikapika] token is valid');
@@ -561,6 +577,49 @@ async function login(email, password) {
     return { success: true };
 }
 
+// 认证表单定义与提交
+const authForm = {
+    fields: [
+        { key: 'username', type: 'text', label: '账号', placeholder: '邮箱/账号' },
+        {
+            key: 'pikapika_switch',
+            type: 'select',
+            label: '分流',
+            options: Object.keys(SWITCH_ADDRESSES).map(k => ({ label: `分流${k} (${SWITCH_ADDRESSES[k]})`, value: String(k) })),
+            allowCustom: true,
+            customKey: 'pikapika_switch_ip',
+            placeholder: '可自定义IP'
+        },
+        { key: 'password', type: 'password', label: '密码', placeholder: '请输入密码' }
+    ]
+};
+
+async function submitAuthForm(values) {
+    const username = values.username || '';
+    const password = values.password || '';
+    const switchIndex = values.pikapika_switch || '';
+    const switchIp = values.pikapika_switch_ip || '';
+
+    if (switchIp) {
+        await runtime.storage.set('pikapika_switch_ip', switchIp);
+        CUSTOM_SWITCH_IP = switchIp;
+        USE_SWITCH = true;
+        await runtime.storage.set('pikapika_use_switch', '1');
+    } else if (switchIndex) {
+        await runtime.storage.set('pikapika_switch', switchIndex);
+        CURRENT_SWITCH = parseInt(switchIndex) || DEFAULT_SWITCH;
+        USE_SWITCH = true;
+        await runtime.storage.set('pikapika_use_switch', '1');
+    }
+    if (username) await runtime.storage.set('username', username);
+    if (password) await runtime.storage.set('password', password);
+    if (username && password) {
+        await login(username, password);
+        return { success: true };
+    }
+    return { success: false };
+}
+
 /**
  * 检查登录状态
  */
@@ -593,7 +652,9 @@ const module = {
     // 额外方法
     login,
     isLoggedIn,
-    logout
+    logout,
+    authForm,
+    submitAuthForm
 };
 
 // 兼容导出

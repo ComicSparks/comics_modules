@@ -14,7 +14,12 @@ const moduleInfo = {
     version: '1.0.0',
     author: 'comics',
     description: '禁漫天堂 (JMComic/18comic) 数据源，需要登录账号',
-    icon: null
+    icon: null,
+    // 特性声明：支持图片处理与认证表单
+    features: {
+        processImage: true,
+        authForm: true,
+    }
 };
 
 // API 常量
@@ -768,6 +773,43 @@ async function setCdnHost(host) {
 }
 
 /**
+ * 登录表单定义与提交
+ */
+const authForm = {
+    fields: [
+        { key: 'username', type: 'text', label: '账号', placeholder: '请输入账号' },
+        {
+            key: 'jasmine_cdn_host',
+            type: 'select',
+            label: '分流(CDN)',
+            options: [
+                { label: DEFAULT_CDN_HOST, value: DEFAULT_CDN_HOST }
+            ],
+            allowCustom: true,
+            placeholder: '自定义 CDN 域名或选择'
+        },
+        { key: 'password', type: 'password', label: '密码', placeholder: '请输入密码' },
+    ]
+};
+
+async function submitAuthForm(values) {
+    const username = values.username || '';
+    const password = values.password || '';
+    const cdnHost = values.jasmine_cdn_host || '';
+
+    if (cdnHost) {
+        await setCdnHost(cdnHost);
+    }
+    if (username) await runtime.storage.set('username', username);
+    if (password) await runtime.storage.set('password', password);
+    if (username && password) {
+        await login(username, password);
+        return { success: true };
+    }
+    return { success: false };
+}
+
+/**
  * 处理图片（解码）
  * 参数：
  * - imageData: base64 编码的图片数据
@@ -886,7 +928,10 @@ const module = {
     setApiHost,
     setCdnHost,
     // 图片处理
-    processImage
+    processImage,
+    // 认证表单
+    authForm,
+    submitAuthForm
 };
 
 // 兼容导出

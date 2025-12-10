@@ -14,7 +14,10 @@ var moduleInfo = {
     version: '1.0.0',
     author: 'comics',
     description: '绅士漫画 (wnacg) 数据源，需要登录会员',
-    icon: null
+    icon: null,
+    features: {
+        authForm: true
+    }
 };
 
 // 默认主机
@@ -505,4 +508,29 @@ async function isLoggedIn() {
 async function logout() {
     await runtime.storage.remove('wax_cookie');
     return { success: true };
+}
+
+// 认证表单定义与提交
+var authForm = {
+    fields: [
+        { key: 'username', type: 'text', label: '账号', placeholder: '请输入账号' },
+        { key: 'wax_host', type: 'select', label: '分流(Host)', options: [ { label: DEFAULT_HOST, value: DEFAULT_HOST } ], allowCustom: true, placeholder: '自定义主机或选择' },
+        { key: 'password', type: 'password', label: '密码', placeholder: '请输入密码' }
+    ]
+};
+
+async function submitAuthForm(values) {
+    var username = values.username || '';
+    var password = values.password || '';
+    var host = values.wax_host || '';
+    if (host) await setHost(host);
+    if (username && password) {
+        await login(username, password);
+        return { success: true };
+    }
+    return { success: false };
+}
+
+if (typeof module !== 'undefined') {
+    // no-op
 }
