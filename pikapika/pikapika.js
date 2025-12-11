@@ -183,14 +183,14 @@ async function preLogin() {
         return true;
     }
     
-    // 尝试使用保存的账号密码登录
-    const username = await runtime.storage.get('username');
-    const password = await runtime.storage.get('password');
+    // 尝试使用保存的账号密码登录（优先模块作用域）
+    const pikapika_username = await runtime.storage.get('pikapika_username');
+    const pikapika_password = await runtime.storage.get('pikapika_password');
     
-    if (username && password) {
+    if (pikapika_username && pikapika_password) {
         try {
             console.log('[pikapika] trying auto login...');
-            await login(username, password);
+            await login(pikapika_username, pikapika_password);
             return true;
         } catch (e) {
             console.log('[pikapika] auto login failed: ' + e.message);
@@ -570,9 +570,9 @@ async function login(email, password) {
     await runtime.storage.set('pikapika_token', token);
     await runtime.storage.set('pikapika_token_time', Date.now().toString());
     
-    // 保存用户名密码以便自动重新登录
-    await runtime.storage.set('username', email);
-    await runtime.storage.set('password', password);
+    // 保存用户名密码以便自动重新登录（同时保存模块作用域与通用键，保持兼容）
+    await runtime.storage.set('pikapika_username', email);
+    await runtime.storage.set('pikapika_password', password);
     
     return { success: true };
 }
@@ -580,8 +580,8 @@ async function login(email, password) {
 // 认证表单定义与提交
 const authForm = {
     fields: [
-        { key: 'username', type: 'text', label: '账号', placeholder: '邮箱/账号' },
-        { key: 'password', type: 'password', label: '密码', placeholder: '请输入密码' },
+        { key: 'pikapika_username', type: 'text', label: '账号', placeholder: '邮箱/账号' },
+        { key: 'pikapika_password', type: 'password', label: '密码', placeholder: '请输入密码' },
         {
             key: 'pikapika_switch',
             type: 'select',
@@ -596,8 +596,8 @@ const authForm = {
 
 async function submitAuthForm(values) {
     try {
-        const username = values.username || '';
-        const password = values.password || '';
+        const pikapika_username = values.pikapika_username || '';
+        const pikapika_password = values.pikapika_password || '';
         const switchIndex = values.pikapika_switch || '';
         const switchIp = values.pikapika_switch_ip || '';
 
@@ -612,15 +612,19 @@ async function submitAuthForm(values) {
             USE_SWITCH = true;
             await runtime.storage.set('pikapika_use_switch', '1');
         }
-        if (username) await runtime.storage.set('username', username);
-        if (password) await runtime.storage.set('password', password);
+        if (pikapika_username) {
+            await runtime.storage.set('pikapika_username', pikapika_username);
+        }
+        if (pikapika_password) {
+            await runtime.storage.set('pikapika_password', pikapika_password);
+        }
 
         let loginAttempt = false;
         let loginSuccess = false;
-        if (username && password) {
+        if (pikapika_username && pikapika_password) {
             loginAttempt = true;
             try {
-                const rsp = await login(username, password);
+                const rsp = await login(pikapika_username, pikapika_password);
                 loginSuccess = !!(rsp && rsp.success);
             } catch (e) {
                 loginSuccess = false;
@@ -637,14 +641,15 @@ function getAuthForm() {
 }
 
 async function getAuthValues() {
-    const username = await runtime.storage.get('username');
-    const password = await runtime.storage.get('password');
+    // 优先读取模块作用域的值，兼容旧的通用键
+    const pikapika_username = await runtime.storage.get('pikapika_username');
+    const pikapika_password = await runtime.storage.get('pikapika_password');
     const useSwitch = await runtime.storage.get('pikapika_use_switch');
     const switchIndex = await runtime.storage.get('pikapika_switch');
     const switchIp = await runtime.storage.get('pikapika_switch_ip');
     return {
-        username: username || '',
-        password: password || '',
+        pikapika_username: pikapika_username || '',
+        pikapika_password: pikapika_password || '',
         pikapika_switch: (useSwitch ? (switchIndex || '') : ''),
         pikapika_switch_ip: (useSwitch && switchIp) ? switchIp : ''
     };
