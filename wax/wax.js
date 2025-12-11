@@ -497,7 +497,7 @@ async function login(username, password) {
     var body = 'login_name=' + encodeURIComponent(username) + '&login_pass=' + encodeURIComponent(password);
     var url = host + '/users-check.html';
     
-    var response = await runtime.http.post(url, body, headers);
+    var response = await runtime.http.post(url, headers, body);
     
     if (response.headers['set-cookie']) {
         await runtime.storage.set('wax_cookie', response.headers['set-cookie']);

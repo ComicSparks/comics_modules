@@ -193,7 +193,7 @@ async function apiRequest(path, method = 'GET', params = null) {
             })
             .filter(item => item !== null)
             .join('&') : '';
-        response = await runtime.http.post(url, body, headers);
+        response = await runtime.http.post(url, headers, body);
     }
 
     if (response.status !== 200) {
