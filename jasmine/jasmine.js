@@ -778,6 +778,7 @@ async function setCdnHost(host) {
 const authForm = {
     fields: [
         { key: 'username', type: 'text', label: '账号', placeholder: '请输入账号' },
+        { key: 'password', type: 'password', label: '密码', placeholder: '请输入密码' },
         {
             key: 'jasmine_cdn_host',
             type: 'select',
@@ -787,26 +788,52 @@ const authForm = {
             ],
             allowCustom: true,
             placeholder: '自定义 CDN 域名或选择'
-        },
-        { key: 'password', type: 'password', label: '密码', placeholder: '请输入密码' },
+        }
     ]
 };
 
 async function submitAuthForm(values) {
-    const username = values.username || '';
-    const password = values.password || '';
-    const cdnHost = values.jasmine_cdn_host || '';
+    try {
+        const username = values.username || '';
+        const password = values.password || '';
+        const cdnHost = values.jasmine_cdn_host || '';
 
-    if (cdnHost) {
-        await setCdnHost(cdnHost);
+        if (cdnHost) {
+            await setCdnHost(cdnHost);
+        }
+        if (username) await runtime.storage.set('username', username);
+        if (password) await runtime.storage.set('password', password);
+
+        let loginAttempt = false;
+        let loginSuccess = false;
+        if (username && password) {
+            loginAttempt = true;
+            try {
+                const rsp = await login(username, password);
+                loginSuccess = !!(rsp && rsp.success);
+            } catch (e) {
+                loginSuccess = false;
+            }
+        }
+        return { success: true, loginAttempt, loginSuccess };
+    } catch (e) {
+        return { success: false, message: e.message };
     }
-    if (username) await runtime.storage.set('username', username);
-    if (password) await runtime.storage.set('password', password);
-    if (username && password) {
-        await login(username, password);
-        return { success: true };
-    }
-    return { success: false };
+}
+
+function getAuthForm() {
+    return authForm;
+}
+
+async function getAuthValues() {
+    const username = await runtime.storage.get('username');
+    const password = await runtime.storage.get('password');
+    const cdnHost = await runtime.storage.get('jasmine_cdn_host');
+    return {
+        username: username || '',
+        password: password || '',
+        jasmine_cdn_host: cdnHost || ''
+    };
 }
 
 /**
@@ -931,7 +958,9 @@ const module = {
     processImage,
     // 认证表单
     authForm,
-    submitAuthForm
+    submitAuthForm,
+    getAuthForm,
+    getAuthValues
 };
 
 // 兼容导出

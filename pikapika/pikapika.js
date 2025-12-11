@@ -581,6 +581,7 @@ async function login(email, password) {
 const authForm = {
     fields: [
         { key: 'username', type: 'text', label: '账号', placeholder: '邮箱/账号' },
+        { key: 'password', type: 'password', label: '密码', placeholder: '请输入密码' },
         {
             key: 'pikapika_switch',
             type: 'select',
@@ -589,35 +590,64 @@ const authForm = {
             allowCustom: true,
             customKey: 'pikapika_switch_ip',
             placeholder: '可自定义IP'
-        },
-        { key: 'password', type: 'password', label: '密码', placeholder: '请输入密码' }
+        }
     ]
 };
 
 async function submitAuthForm(values) {
-    const username = values.username || '';
-    const password = values.password || '';
-    const switchIndex = values.pikapika_switch || '';
-    const switchIp = values.pikapika_switch_ip || '';
+    try {
+        const username = values.username || '';
+        const password = values.password || '';
+        const switchIndex = values.pikapika_switch || '';
+        const switchIp = values.pikapika_switch_ip || '';
 
-    if (switchIp) {
-        await runtime.storage.set('pikapika_switch_ip', switchIp);
-        CUSTOM_SWITCH_IP = switchIp;
-        USE_SWITCH = true;
-        await runtime.storage.set('pikapika_use_switch', '1');
-    } else if (switchIndex) {
-        await runtime.storage.set('pikapika_switch', switchIndex);
-        CURRENT_SWITCH = parseInt(switchIndex) || DEFAULT_SWITCH;
-        USE_SWITCH = true;
-        await runtime.storage.set('pikapika_use_switch', '1');
+        if (switchIp) {
+            await runtime.storage.set('pikapika_switch_ip', switchIp);
+            CUSTOM_SWITCH_IP = switchIp;
+            USE_SWITCH = true;
+            await runtime.storage.set('pikapika_use_switch', '1');
+        } else if (switchIndex) {
+            await runtime.storage.set('pikapika_switch', switchIndex);
+            CURRENT_SWITCH = parseInt(switchIndex) || DEFAULT_SWITCH;
+            USE_SWITCH = true;
+            await runtime.storage.set('pikapika_use_switch', '1');
+        }
+        if (username) await runtime.storage.set('username', username);
+        if (password) await runtime.storage.set('password', password);
+
+        let loginAttempt = false;
+        let loginSuccess = false;
+        if (username && password) {
+            loginAttempt = true;
+            try {
+                const rsp = await login(username, password);
+                loginSuccess = !!(rsp && rsp.success);
+            } catch (e) {
+                loginSuccess = false;
+            }
+        }
+        return { success: true, loginAttempt, loginSuccess };
+    } catch (e) {
+        return { success: false, message: e.message };
     }
-    if (username) await runtime.storage.set('username', username);
-    if (password) await runtime.storage.set('password', password);
-    if (username && password) {
-        await login(username, password);
-        return { success: true };
-    }
-    return { success: false };
+}
+
+function getAuthForm() {
+    return authForm;
+}
+
+async function getAuthValues() {
+    const username = await runtime.storage.get('username');
+    const password = await runtime.storage.get('password');
+    const useSwitch = await runtime.storage.get('pikapika_use_switch');
+    const switchIndex = await runtime.storage.get('pikapika_switch');
+    const switchIp = await runtime.storage.get('pikapika_switch_ip');
+    return {
+        username: username || '',
+        password: password || '',
+        pikapika_switch: (useSwitch ? (switchIndex || '') : ''),
+        pikapika_switch_ip: (useSwitch && switchIp) ? switchIp : ''
+    };
 }
 
 /**
@@ -654,7 +684,9 @@ const module = {
     isLoggedIn,
     logout,
     authForm,
-    submitAuthForm
+    submitAuthForm,
+    getAuthForm,
+    getAuthValues
 };
 
 // 兼容导出

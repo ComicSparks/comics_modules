@@ -20,8 +20,18 @@ var moduleInfo = {
     }
 };
 
-// 默认主机
+// 默认主机与分流列表
 var DEFAULT_HOST = 'https://www.wn03.ru';
+var WAX_HOSTS = [
+    'https://www.wn04.ru',
+    'https://www.wnacg05.cc',
+    'https://www.wnacg03.cc',
+    'https://www.wn03.ru',
+    'https://www.wnacg02.cc',
+    'https://www.wnacg01.cc',
+    'https://wnacg.com',
+    'https://wnacg.ru',
+];
 
 // 分类映射
 var CATEGORIES = [
@@ -514,23 +524,79 @@ async function logout() {
 var authForm = {
     fields: [
         { key: 'username', type: 'text', label: '账号', placeholder: '请输入账号' },
-        { key: 'wax_host', type: 'select', label: '分流(Host)', options: [ { label: DEFAULT_HOST, value: DEFAULT_HOST } ], allowCustom: true, placeholder: '自定义主机或选择' },
-        { key: 'password', type: 'password', label: '密码', placeholder: '请输入密码' }
+        { key: 'password', type: 'password', label: '密码', placeholder: '请输入密码' },
+        {
+            key: 'wax_host',
+            type: 'select',
+            label: '分流(Host)',
+            options: WAX_HOSTS.map(function(host) { return { label: host, value: host }; }),
+            allowCustom: true,
+            placeholder: '自定义主机或选择'
+        }
     ]
 };
 
 async function submitAuthForm(values) {
-    var username = values.username || '';
-    var password = values.password || '';
-    var host = values.wax_host || '';
-    if (host) await setHost(host);
-    if (username && password) {
-        await login(username, password);
-        return { success: true };
+    try {
+        var username = values.username || '';
+        var password = values.password || '';
+        var host = values.wax_host || '';
+        if (host) await setHost(host);
+        // 保存账号密码供后续自动登录
+        if (username) await runtime.storage.set('username', username);
+        if (password) await runtime.storage.set('password', password);
+        var loginAttempt = false;
+        var loginSuccess = false;
+        if (username && password) {
+            loginAttempt = true;
+            try {
+                var rsp = await login(username, password);
+                loginSuccess = !!(rsp && rsp.success);
+            } catch (e) {
+                loginSuccess = false;
+            }
+        }
+        return { success: true, loginAttempt: loginAttempt, loginSuccess: loginSuccess };
+    } catch (e) {
+        return { success: false, message: e.message };
     }
-    return { success: false };
 }
 
-if (typeof module !== 'undefined') {
-    // no-op
+function getAuthForm() {
+    return authForm;
+}
+
+async function getAuthValues() {
+    var username = await runtime.storage.get('username');
+    var password = await runtime.storage.get('password');
+    var host = await runtime.storage.get('wax_host');
+    return {
+        username: username || '',
+        password: password || '',
+        wax_host: host || ''
+    };
+}
+
+// 导出模块
+const module = {
+    moduleInfo,
+    getCategories,
+    getSortOptions,
+    getComics,
+    getComicDetail,
+    getEps,
+    getPictures,
+    search,
+    login,
+    isLoggedIn,
+    logout,
+    setHost,
+    authForm,
+    submitAuthForm,
+    getAuthForm,
+    getAuthValues
+};
+
+if (typeof exports !== 'undefined') {
+    Object.assign(exports, module);
 }
