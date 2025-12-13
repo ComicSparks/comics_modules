@@ -79,18 +79,15 @@ function generateSignature(path, method, time) {
 
 /**
  * 获取API URL
- * 如果 USE_SWITCH 为 true，使用分流IP；否则直接使用域名
+ * 始终使用分流IP
  */
-let USE_SWITCH = false;  // 可通过表单配置
 let CURRENT_SWITCH = DEFAULT_SWITCH;
 let CUSTOM_SWITCH_IP = '';
 
 function getApiUrl(path) {
-    if (USE_SWITCH) {
+    // 始终使用分流，优先使用自定义IP，其次使用当前分流，最后默认分流3
         const switchIp = CUSTOM_SWITCH_IP || SWITCH_ADDRESSES[CURRENT_SWITCH] || SWITCH_ADDRESSES[3];
         return `https://${switchIp}/${path}`;
-    }
-    return `https://${API_HOST}/${path}`;
 }
 
 /**
@@ -115,13 +112,9 @@ function getHeaders(path, method) {
         'app-build-version': '44',
         'Content-Type': 'application/json; charset=UTF-8',
         'User-Agent': 'okhttp/3.8.1',
-        'image-quality': 'original'
+        'image-quality': 'original',
+        'Host': API_HOST  // 始终使用分流，需要添加 Host header
     };
-    
-    // 使用分流IP时需要添加 Host header
-    if (USE_SWITCH) {
-        headers['Host'] = API_HOST;
-    }
     
     return headers;
 }
@@ -165,18 +158,30 @@ async function isTokenValid() {
  */
 async function preLogin() {
     console.log('[pikapika] preLogin called');
-    // 初始化分流设置
+    // 初始化分流设置（始终使用分流，只读取用户设置的分流编号或自定义IP）
     try {
-        const use = await runtime.storage.get('pikapika_use_switch');
-        USE_SWITCH = use === '1' || use === true || use === 'true';
         const idx = await runtime.storage.get('pikapika_switch');
         if (idx) {
             const n = parseInt(idx);
-            if (!isNaN(n)) CURRENT_SWITCH = n;
+            if (!isNaN(n)) {
+                CURRENT_SWITCH = n;
+            }
+        } else {
+            // 用户没设置时，默认使用分流3
+            CURRENT_SWITCH = DEFAULT_SWITCH;
         }
         const ip = await runtime.storage.get('pikapika_switch_ip');
-        if (ip) CUSTOM_SWITCH_IP = ip;
-    } catch (e) { console.log('[pikapika] init switch failed:', e.message); }
+        if (ip) {
+            CUSTOM_SWITCH_IP = ip;
+        } else {
+            CUSTOM_SWITCH_IP = '';
+        }
+    } catch (e) { 
+        console.log('[pikapika] init switch failed:', e.message);
+        // 出错时使用默认分流3
+        CURRENT_SWITCH = DEFAULT_SWITCH;
+        CUSTOM_SWITCH_IP = '';
+    }
     // 检查现有 token 是否有效
     if (await isTokenValid()) {
         console.log('[pikapika] token is valid');
@@ -601,17 +606,24 @@ async function submitAuthForm(values) {
         const switchIndex = values.pikapika_switch || '';
         const switchIp = values.pikapika_switch_ip || '';
 
+        // 始终使用分流，只保存用户设置的分流编号或自定义IP
         if (switchIp) {
             await runtime.storage.set('pikapika_switch_ip', switchIp);
             CUSTOM_SWITCH_IP = switchIp;
-            USE_SWITCH = true;
-            await runtime.storage.set('pikapika_use_switch', '1');
         } else if (switchIndex) {
             await runtime.storage.set('pikapika_switch', switchIndex);
             CURRENT_SWITCH = parseInt(switchIndex) || DEFAULT_SWITCH;
-            USE_SWITCH = true;
-            await runtime.storage.set('pikapika_use_switch', '1');
+            // 清除自定义IP，使用预设分流
+            await runtime.storage.remove('pikapika_switch_ip');
+            CUSTOM_SWITCH_IP = '';
+        } else {
+            // 用户没设置分流，使用默认分流3，清除保存的设置
+            CURRENT_SWITCH = DEFAULT_SWITCH;
+            await runtime.storage.remove('pikapika_switch');
+            await runtime.storage.remove('pikapika_switch_ip');
+            CUSTOM_SWITCH_IP = '';
         }
+        
         if (pikapika_username) {
             await runtime.storage.set('pikapika_username', pikapika_username);
         }
@@ -644,14 +656,14 @@ async function getAuthValues() {
     // 优先读取模块作用域的值，兼容旧的通用键
     const pikapika_username = await runtime.storage.get('pikapika_username');
     const pikapika_password = await runtime.storage.get('pikapika_password');
-    const useSwitch = await runtime.storage.get('pikapika_use_switch');
     const switchIndex = await runtime.storage.get('pikapika_switch');
     const switchIp = await runtime.storage.get('pikapika_switch_ip');
     return {
         pikapika_username: pikapika_username || '',
         pikapika_password: pikapika_password || '',
-        pikapika_switch: (useSwitch ? (switchIndex || '') : ''),
-        pikapika_switch_ip: (useSwitch && switchIp) ? switchIp : ''
+        // 始终使用分流，返回用户设置的分流编号或空（使用默认分流3）
+        pikapika_switch: switchIndex || '',
+        pikapika_switch_ip: switchIp || ''
     };
 }
 
