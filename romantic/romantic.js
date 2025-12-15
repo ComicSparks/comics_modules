@@ -285,7 +285,8 @@ async function fetchDetail(id) {
     var html = await httpGet(url);
     console.log('[romantic] detail HTML received, length:', html.length);
     var doc = runtime.html.parse(html);
-    var titleNode = doc.querySelector('h1, .text-2xl, .text-foreground:not(nav *)');
+    // 使用更精确的选择器避免匹配网站名称
+    var titleNode = doc.querySelector('.text-xl.text-foreground');
     var title = titleNode ? titleNode.textContent.trim() : '';
     console.log('[romantic] parsed title:', title);
     var coverMeta = doc.querySelector('meta[property="og:image"]');
@@ -548,7 +549,7 @@ async function getPictures(params) {
   }
   
   console.log('[romantic] getPictures fetching images for comicId:', comicId, 'epIndex:', epIndex);
-  
+
   // Fetch images for this episode/chapter
   var images = await fetchImages(comicId, epIndex);
   
@@ -568,13 +569,18 @@ async function getPictures(params) {
       if (urlParts.length > 0) {
         imageName = urlParts[urlParts.length - 1];
       }
+      var metadata = {
+        imageUrl: imageUrl,
+        imageName: imageName
+      };
+      // add a processing version to invalidate stale caches when algorithm changes
+      if (imageUrl && imageUrl.indexOf('sr:1') !== -1) {
+        metadata.proc = 'sr1-v2';
+      }
       return { 
         id: epId + "_" + idx, 
         media: toRemoteImageInfo(imageUrl),
-        metadata: {
-          imageUrl: imageUrl,
-          imageName: imageName
-        }
+        metadata: metadata
       };
     })
   };
@@ -619,8 +625,20 @@ async function processImage(args) {
   
   console.log('[romantic] processImage called, imageUrl:', imageUrl, 'imageName:', imageName);
   
-  // Check if image needs descrambling (ends with #scrambled)
-  if (!imageUrl || imageUrl.indexOf('#scrambled') === -1) {
+  // New site logic: scrambled images are indicated by `sr:1` in URL
+  // Example: .../wm:0/sr:1/.../00001.webp
+  var isScrambled = false;
+  try {
+    isScrambled = !!(imageUrl && imageUrl.indexOf('sr:1') !== -1);
+    if (!isScrambled && imageName) {
+      var decodedName = imageName;
+      try { decodedName = decodeURIComponent(imageName); } catch (e) {}
+      if (decodedName.indexOf('sr:1') !== -1) {
+        isScrambled = true;
+      }
+    }
+  } catch (e) {}
+  if (!isScrambled) {
     console.log('[romantic] processImage: image not scrambled, returning original');
     return { imageData: imageData };
   }
@@ -635,69 +653,87 @@ async function processImage(args) {
     console.log('[romantic] processImage: image size:', width, 'x', height);
     
     // Calculate number of blocks
-    // Extract filename without extension and #scrambled suffix
-    var filename = imageName.replace('.jpg', '').replace('#scrambled', '');
-    console.log('[romantic] processImage: filename for hash:', filename);
+    // Python demo: filename = image_url.split('/')[-1]; filename_no_ext = '.'.join(filename.split('.')[:-1])
+    // Extract last path segment (from URL or imageName), remove extension, convert URL-safe base64
+    var b64key = '';
+    try {
+      var source = imageUrl || imageName || '';
+      // Get last path segment
+      var segments = source.split('/');
+      var lastSeg = segments[segments.length - 1];
+      // Remove extension: '.'.join(filename.split('.')[:-1])
+      var parts = lastSeg.split('.');
+      if (parts.length > 1) {
+        parts.pop(); // remove last (extension)
+        b64key = parts.join('.');
+      } else {
+        b64key = lastSeg;
+      }
+      console.log('[romantic] processImage: extracted filename (no ext):', b64key.substring(0, Math.min(32, b64key.length)), '...');
+    } catch (e) {
+      console.error('[romantic] processImage: failed to extract b64 key:', e.message);
+    }
+    
+    // URL-safe base64 to standard: replace('-', '+').replace('_', '/')
+    b64key = b64key.replace(/-/g, '+').replace(/_/g, '/');
+    // fix base64 padding
+    var paddingMissing = b64key.length % 4;
+    if (paddingMissing) {
+      b64key = b64key + '='.repeat(4 - paddingMissing);
+    }
+    console.log('[romantic] processImage: b64 key ready for decode, len:', b64key.length);
     
     // Base64 decode filename
-    var filenameBytes = runtime.crypto.base64Decode(filename);
+    var filenameBytes = runtime.crypto.base64Decode(b64key);
     console.log('[romantic] processImage: decoded filename bytes length:', filenameBytes.length);
     
-    // MD5 hash
-    var md5Hash = runtime.crypto.md5Bytes(filenameBytes);
-    console.log('[romantic] processImage: MD5 hash length:', md5Hash.length);
+    // MD5 hash (returns hex string, not byte array)
+    var md5HashHex = runtime.crypto.md5Bytes(filenameBytes);
+    console.log('[romantic] processImage: MD5 hash (hex):', md5HashHex.substring(0, 16), '...');
     
     // Get last byte and calculate blocks (5-14)
-    var lastByteArray = md5Hash.slice(-1);
-    var lastByte = lastByteArray[0];
-    // Convert to unsigned byte (0-255)
-    if (lastByte < 0) {
-      lastByte = lastByte + 256;
-    }
+    // Python: last_byte = int(md5_hash[-2:], 16)
+    // Take last 2 hex chars (= 1 byte), convert to int
+    var lastByteHex = md5HashHex.substring(md5HashHex.length - 2);
+    var lastByte = parseInt(lastByteHex, 16);
     var blocks = (lastByte % 10) + 5;
     console.log('[romantic] processImage: last byte:', lastByte, 'blocks:', blocks);
     
-    // Calculate block height
-    var blockHeight = Math.floor(height / blocks);
-    console.log('[romantic] processImage: blockHeight:', blockHeight);
-    
-    // Descramble by reversing blocks
-    // Start from bottom block (block index blocks-1), which has remainder
-    var srcY = blockHeight * (blocks - 1);
-    var dstY = 0;
-    
+    // New slicing scheme (per demo):
+    // slice_base_height = Math.floor(height / blocks)
+    // remainder = height % blocks
+    // For each l: p = slice_base_height; y = p * l;
+    // d = height - p * (l + 1) - remainder;
+    // if l == 0: current_h = p + remainder; else: current_h = p; y += remainder
+    var sliceBase = Math.floor(height / blocks);
+    var remainder = height % blocks;
     var crops = [];
-    for (var i = 0; i < blocks; i++) {
-      // First iteration: remainder block (height - srcY)
-      // Other iterations: normal block (blockHeight)
-      var h = (i === 0) ? (height - srcY) : blockHeight;
-      
-      console.log('[romantic] processImage: block', i, 'srcY:', srcY, 'dstY:', dstY, 'height:', h);
-      
-      // Crop this block from source position
-      crops.push({
-        x: 0,
-        y: srcY,
-        width: width,
-        height: h,
-        dstY: dstY
-      });
-      
-      srcY -= blockHeight;
-      dstY += h;
+    for (var l = 0; l < blocks; l++) {
+      var p = sliceBase;
+      var y = p * l; // destination order
+      var d = height - p * (l + 1) - remainder; // source top
+      var currentH = (l === 0) ? (p + remainder) : p;
+      if (l !== 0) {
+        y += remainder;
+      }
+      // Bound checks
+      if (d < 0) d = 0;
+      if (d + currentH > height) currentH = height - d;
+      console.log('[romantic] processImage: block', l, 'srcY:', d, 'dstOrderY:', y, 'height:', currentH);
+      crops.push({ x: 0, y: d, width: width, height: currentH });
     }
     
     // Create descrambled image by composing crops
     var descrambledData = imageData;
     
-    // Process crops in sequence, building up the final image
+    // Process crops in sequence, always cropping from the original image
     for (var j = 0; j < crops.length; j++) {
       var crop = crops[j];
       console.log('[romantic] processImage: processing crop', j, '- x:', crop.x, 'y:', crop.y, 'w:', crop.width, 'h:', crop.height);
       
-      // Crop the block from the scrambled image
+      // Always crop from the original scrambled image
       var croppedData = runtime.image.crop(
-        j === 0 ? imageData : descrambledData, // First crop from original, then from partial result
+        imageData,
         crop.x,
         crop.y,
         crop.width,
