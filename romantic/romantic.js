@@ -36,6 +36,12 @@ async function httpGet(url) {
 function fixUrl(url) {
   if (!url) return "";
   url = url.replace(/^\/\/+/, "//");
+  // Remove trailing backslashes and other escape characters
+  url = url.replace(/[\\\s]+$/, '');
+  // Remove any trailing quotes, braces, or other unwanted characters
+  url = url.replace(/["'}\\]*$/, '');
+  // Remove any remaining trailing backslashes
+  url = url.replace(/\\+$/, '');
   if (url.startsWith("//")) return "https:" + url;
   return url;
 }
@@ -44,7 +50,16 @@ function toRemoteImageInfo(url) {
   if (!url || url === '') {
     return { original_name: "", path: "", file_server: "", headers: {} };
   }
-  const u = fixUrl(url);
+  // Clean URL: remove trailing backslashes, whitespace, and escape characters
+  // More aggressive cleaning: remove all trailing backslashes, escape sequences, and whitespace
+  var cleanedUrl = url.trim();
+  // Remove trailing backslashes (including escaped ones) and whitespace
+  cleanedUrl = cleanedUrl.replace(/[\\\s]+$/, '');
+  // Also remove any trailing quotes, braces, or other unwanted characters
+  cleanedUrl = cleanedUrl.replace(/["'}\\]*$/, '');
+  // Remove any remaining trailing backslashes after the above
+  cleanedUrl = cleanedUrl.replace(/\\+$/, '');
+  const u = fixUrl(cleanedUrl);
   console.log('[romantic] toRemoteImageInfo: input=', url, 'output=', u);
   // For full URLs, put the entire URL in path, file_server should be empty
   return { original_name: "", path: u, file_server: "", headers: {} };
@@ -276,31 +291,54 @@ async function fetchDetail(id) {
     var coverMeta = doc.querySelector('meta[property="og:image"]');
     var cover = coverMeta ? coverMeta.getAttribute('content') : null;
     console.log('[romantic] parsed cover:', cover);
-    // Extract chapters list if present; otherwise create 0..(pages-1) when known.
-    var chapters = [];
+    
+    // Extract actual chapter/episode list from page
+    // Look for chapter links pattern: /books/{id}/{epIndex}
+    var chaptersMap = {}; // Use map to deduplicate
     var chapLinks = doc.querySelectorAll('a[href^="/books/' + id + '/"]');
+    console.log('[romantic] found', chapLinks.length, 'chapter links');
     for (var i = 0; i < chapLinks.length; i++) {
         var a = chapLinks[i];
         var href = a.getAttribute('href');
-        var m = href && new RegExp('/books/' + id + '/([0-9]+)').exec(href);
+        var m = href && new RegExp('/books/' + id + '/([0-9]+)$').exec(href);
         if (!m) continue;
-        var idx = parseInt(m[1], 10);
-        var nameNode = a.querySelector('.text-foreground, .line-clamp-1, span');
-        var name = nameNode ? nameNode.textContent.trim() : '第' + (idx + 1) + '页';
-        chapters.push({
-            id: '' + idx,
+        var epIndex = parseInt(m[1], 10);
+        if (isNaN(epIndex)) continue;
+        
+        // Try to get chapter name from link text
+        var nameNode = a.querySelector('.text-foreground, .line-clamp-1, span, h3, h2');
+        var name = nameNode ? nameNode.textContent.trim() : null;
+        if (!name || name === '') {
+            name = a.textContent.trim();
+        }
+        if (!name || name === '') {
+            name = '第' + (epIndex + 1) + '话';
+        }
+        
+        chaptersMap[epIndex] = {
+            epIndex: epIndex,
             name: name,
             url: BASE + href
-        });
+        };
     }
+    
+    // Convert map to sorted array
+    var chapters = [];
+    for (var key in chaptersMap) {
+        if (chaptersMap.hasOwnProperty(key)) {
+            chapters.push(chaptersMap[key]);
+        }
+    }
+    chapters.sort(function(a, b) { return a.epIndex - b.epIndex; });
+    
     console.log('[romantic] detail', id, 'title', title, 'chapters', chapters.length);
     return { id: id, title: title, cover: cover, chapters: chapters };
 }
 
-async function fetchImages(id, page) {
-    console.log('[romantic] fetchImages called with id:', id, 'page:', page);
-    // Reader page: /books/{id}/{page}
-    var url = BASE + '/books/' + id + '/' + page;
+async function fetchImages(id, epIndex) {
+    console.log('[romantic] fetchImages called with id:', id, 'epIndex:', epIndex);
+    // Reader page: /books/{id}/{epIndex}
+    var url = BASE + '/books/' + id + '/' + epIndex;
     console.log('[romantic] fetching images from:', url);
     var html = await httpGet(url);
     console.log('[romantic] images HTML received, length:', html.length);
@@ -308,33 +346,88 @@ async function fetchImages(id, page) {
     var imgs = [];
     // Prefer server-rendered imageUrl entries if present; fallback to <img id="image_*">
     var metaImages = [];
-    var nextDataImgs = doc.querySelectorAll('div[class*="flex justify-center"] img');
-    console.log('[romantic] found', nextDataImgs.length, 'img tags in flex justify-center divs');
-    for (var i = 0; i < nextDataImgs.length; i++) {
-        var img = nextDataImgs[i];
-        var src = img.getAttribute('src') || img.getAttribute('data-src');
-        if (!src || src.indexOf('loading.jpg') >= 0) continue;
-        if (src.indexOf('http') !== 0) src = BASE + src;
-        metaImages.push(src);
-    }
-    // If SSR didn't inline, attempt script blob containing imageUrl entries
-    if (metaImages.length === 0) {
-        var scripts = doc.querySelectorAll('script');
-        for (var j = 0; j < scripts.length; j++) {
-            var s = scripts[j];
-            var t = s.textContent || '';
-            var matches = t.match(/imageUrl\"\:\"(https?:\/\/[^\"]+)\"/g) || [];
-            for (var k = 0; k < matches.length; k++) {
-                var m = matches[k];
-                var u = m.replace(/.*imageUrl\"\:\"/, '').replace(/\".*/, '');
-                metaImages.push(u);
+    // First, try to find imageUrl in script tags (most reliable)
+    var scripts = doc.querySelectorAll('script');
+    console.log('[romantic] found', scripts.length, 'script tags');
+    for (var j = 0; j < scripts.length; j++) {
+        var s = scripts[j];
+        var t = s.textContent || '';
+        if (!t || t.length < 100) continue; // Skip empty or very short scripts
+        
+        // Try to find all imageUrl entries and extract URLs
+        // Use a more flexible pattern that handles escaped and unescaped quotes
+        // Match: imageUrl":"URL" or imageUrl\":\"URL\" or imageUrl: "URL"
+        var urlSet = new Set(); // Use Set to avoid duplicates
+        
+        // Pattern: match imageUrl followed by colon, optional quotes (escaped or not), then URL
+        // The URL is captured in group 1, and we match until the closing quote or end of value
+        var pattern = /imageUrl(?:\\?["']?\s*:\s*\\?["']?)(https?:\/\/[^"',\s}]+)/g;
+        var match;
+        
+        while ((match = pattern.exec(t)) !== null) {
+            if (match[1]) {
+                var url = match[1].trim();
+                // Remove any trailing characters that might have been captured (quotes, braces, whitespace, backslashes)
+                url = url.replace(/[",'}\s\\]+$/, '');
+                // Remove any remaining trailing backslashes
+                url = url.replace(/\\+$/, '');
+                if (url && url.indexOf('http') === 0) {
+                    urlSet.add(url);
+                }
             }
+        }
+        
+        // If the simple pattern didn't work, try a more specific pattern for JSON strings
+        if (urlSet.size === 0) {
+            // Pattern for JSON: imageUrl":"URL" or imageUrl\":\"URL\"
+            var jsonPattern = /imageUrl(?:\\?"\s*:\s*\\?"|"\s*:\s*")(https?:\/\/[^"]+)/g;
+            while ((match = jsonPattern.exec(t)) !== null) {
+                if (match[1]) {
+                    var url = match[1].trim();
+                    // Remove trailing backslashes and escape characters
+                    url = url.replace(/[\\\s]+$/, '');
+                    // Remove any remaining trailing backslashes and quotes
+                    url = url.replace(/["'}\\]*$/, '');
+                    url = url.replace(/\\+$/, '');
+                    if (url && url.indexOf('http') === 0) {
+                        urlSet.add(url);
+                    }
+                }
+            }
+        }
+        
+        if (urlSet.size > 0) {
+            console.log('[romantic] script', j, 'found', urlSet.size, 'unique imageUrl matches');
+            urlSet.forEach(function(url) {
+                metaImages.push(url);
+                console.log('[romantic] extracted imageUrl:', url);
+            });
+        } else {
+            // Debug: log a sample of the script content to see what we're working with
+            if (t.indexOf('imageUrl') !== -1) {
+                var sample = t.substring(t.indexOf('imageUrl'), t.indexOf('imageUrl') + 200);
+                console.log('[romantic] script', j, 'contains imageUrl but no matches found. Sample:', sample);
+            }
+        }
+    }
+    console.log('[romantic] found', metaImages.length, 'images from script tags');
+    // Fallback: try to find img tags in flex justify-center divs
+    if (metaImages.length === 0) {
+        var nextDataImgs = doc.querySelectorAll('div[class*="flex justify-center"] img');
+        console.log('[romantic] found', nextDataImgs.length, 'img tags in flex justify-center divs');
+        for (var i = 0; i < nextDataImgs.length; i++) {
+            var img = nextDataImgs[i];
+            var src = img.getAttribute('src') || img.getAttribute('data-src');
+            if (!src || src.indexOf('loading.jpg') >= 0) continue;
+            if (src.indexOf('http') !== 0) src = BASE + src;
+            metaImages.push(src);
         }
     }
     for (var l = 0; l < metaImages.length; l++) {
         imgs.push({ url: metaImages[l] });
     }
-    console.log('[romantic] images', id, 'page', page, 'count', imgs.length);
+    
+    console.log('[romantic] images', id, 'epIndex', epIndex, 'count', imgs.length);
     return imgs;
 }
 
@@ -346,7 +439,9 @@ var moduleInfo = {
   author: "comics",
   description: "肉漫屋 (rouman5.com) 数据源模块",
   icon: null,
-  features: {}
+  features: {
+    processImage: true
+  }
 };
 
 async function getCategories() {
@@ -361,14 +456,18 @@ async function getComics(params) {
     console.log('[romantic] getComics called with params:', JSON.stringify(params));
     var page = params.page || 1;
     var list = await listLatest(page);
+    // If no items found, treat as last page (current page is the last page)
+    // If items found but less than expected, also treat as last page
+    var limit = 20;
+    var hasMore = list.length > 0 && list.length >= limit;
     var result = {
         total: list.length,
-        limit: list.length || 20,
+        limit: limit,
         page: page,
-        pages: 1,
+        pages: hasMore ? page + 1 : page, // If has more, next page exists; otherwise current page is last
         docs: list.map(toComicSimple)
     };
-    console.log('[romantic] getComics returning:', result.docs.length, 'comics');
+    console.log('[romantic] getComics returning:', result.docs.length, 'comics, pages:', result.pages);
     return result;
 }
 
@@ -380,25 +479,103 @@ async function getComicDetail(params) {
 
 async function getEps(params) {
   var comicId = params.comicId;
+  console.log('[romantic] getEps called with comicId:', comicId);
+  
+  var detail = await fetchDetail(comicId);
+  var chapters = detail.chapters || [];
+  
+  // If no chapters found, return a default single episode
+  if (chapters.length === 0) {
+    console.log('[romantic] no chapters found, returning default episode');
+    return {
+      total: 1,
+      limit: 100,
+      page: 1,
+      pages: 1,
+      docs: [{ id: comicId + '#0', title: "全一话", order: 1, updated_at: "" }]
+    };
+  }
+  
+  // Convert chapters to episode format
+  // Episode ID format: "comicId#epIndex" (e.g., "cmj1uhc3i001zs6w0yiul0br9#0")
+  var docs = chapters.map(function(chapter, idx) {
+    return {
+      id: comicId + '#' + chapter.epIndex,
+      title: chapter.name,
+      order: idx + 1,
+      updated_at: ''
+    };
+  });
+  
+  console.log('[romantic] getEps returning', docs.length, 'episodes');
   return {
-    total: 1,
+    total: docs.length,
     limit: 100,
     page: 1,
     pages: 1,
-    docs: [{ id: comicId, title: "全一话", order: 1, updated_at: "" }]
+    docs: docs
   };
 }
 
 async function getPictures(params) {
-  var comicId = params.comicId;
-  var pages = await fetchImages(comicId, 0);
+  var epId = params.epId || params.ep_id || '';
+  console.log('[romantic] getPictures called with epId:', epId);
+  
+  // Parse epId format: "comicId#epIndex"
+  var parts = epId.split('#');
+  if (parts.length !== 2) {
+    console.error('[romantic] getPictures invalid epId format:', epId, 'expected "comicId#epIndex"');
+    return {
+      total: 0,
+      limit: 0,
+      page: 1,
+      pages: 1,
+      docs: []
+    };
+  }
+  
+  var comicId = parts[0];
+  var epIndex = parseInt(parts[1], 10);
+  if (isNaN(epIndex)) {
+    console.error('[romantic] getPictures invalid epIndex:', parts[1]);
+    return {
+      total: 0,
+      limit: 0,
+      page: 1,
+      pages: 1,
+      docs: []
+    };
+  }
+  
+  console.log('[romantic] getPictures fetching images for comicId:', comicId, 'epIndex:', epIndex);
+  
+  // Fetch images for this episode/chapter
+  var images = await fetchImages(comicId, epIndex);
+  
+  console.log('[romantic] getPictures found', images.length, 'images for episode', epIndex);
+  
   return {
-    total: pages.length,
-    limit: pages.length,
+    total: images.length,
+    limit: images.length,
     page: 1,
     pages: 1,
-    docs: pages.map(function (p, idx) {
-      return { id: comicId + "_" + idx, media: toRemoteImageInfo(p.url || p) };
+    docs: images.map(function (p, idx) {
+      var imageUrl = p.url || p;
+      var imageName = '';
+      // Extract image filename from URL for metadata (used for descrambling)
+      // Format: https://.../.../filename.jpg or https://.../.../encoded_filename.jpg#scrambled
+      var urlParts = imageUrl.split('/');
+      if (urlParts.length > 0) {
+        imageName = urlParts[urlParts.length - 1];
+      }
+      return { 
+        id: epId + "_" + idx, 
+        media: toRemoteImageInfo(imageUrl),
+        metadata: {
+          imageUrl: imageUrl,
+          imageName: imageName
+        }
+      };
     })
   };
 }
@@ -407,13 +584,143 @@ async function search(params) {
   var page = params.page || 1;
   var keyword = params.keyword || "";
   var list = await listSearch(keyword, page);
+  // If no items found, treat as last page (current page is the last page)
+  // If items found but less than expected, also treat as last page
+  var limit = 20;
+  var hasMore = list.length > 0 && list.length >= limit;
   return {
     total: list.length,
-    limit: list.length || 20,
+    limit: limit,
     page: page,
-    pages: 1,
+    pages: hasMore ? page + 1 : page, // If has more, next page exists; otherwise current page is last
     docs: list.map(toComicSimple)
   };
+}
+
+/**
+ * Process image (descramble if needed)
+ * 
+ * Algorithm from rouman website:
+ * - Images ending with #scrambled are scrambled
+ * - The filename (without .jpg) is base64 decoded, then MD5 hashed
+ * - The last byte of MD5 hash % 10 + 5 gives the number of blocks (5-14)
+ * - Image is divided into blocks horizontally
+ * - Blocks are reversed: bottom block goes to top, etc.
+ * - Remainder height is included in bottom block
+ * 
+ * @param {Object} args - { imageData: base64, params: { imageUrl, imageName } }
+ * @returns {Object} - { imageData: base64 }
+ */
+async function processImage(args) {
+  var imageData = args.imageData;
+  var params = args.params || {};
+  var imageUrl = params.imageUrl || '';
+  var imageName = params.imageName || '';
+  
+  console.log('[romantic] processImage called, imageUrl:', imageUrl, 'imageName:', imageName);
+  
+  // Check if image needs descrambling (ends with #scrambled)
+  if (!imageUrl || imageUrl.indexOf('#scrambled') === -1) {
+    console.log('[romantic] processImage: image not scrambled, returning original');
+    return { imageData: imageData };
+  }
+  
+  try {
+    // Get image info
+    console.log('[romantic] processImage: getting image info...');
+    var infoJson = runtime.image.getInfo(imageData);
+    var info = JSON.parse(infoJson);
+    var width = info.width;
+    var height = info.height;
+    console.log('[romantic] processImage: image size:', width, 'x', height);
+    
+    // Calculate number of blocks
+    // Extract filename without extension and #scrambled suffix
+    var filename = imageName.replace('.jpg', '').replace('#scrambled', '');
+    console.log('[romantic] processImage: filename for hash:', filename);
+    
+    // Base64 decode filename
+    var filenameBytes = runtime.crypto.base64Decode(filename);
+    console.log('[romantic] processImage: decoded filename bytes length:', filenameBytes.length);
+    
+    // MD5 hash
+    var md5Hash = runtime.crypto.md5Bytes(filenameBytes);
+    console.log('[romantic] processImage: MD5 hash length:', md5Hash.length);
+    
+    // Get last byte and calculate blocks (5-14)
+    var lastByteArray = md5Hash.slice(-1);
+    var lastByte = lastByteArray[0];
+    // Convert to unsigned byte (0-255)
+    if (lastByte < 0) {
+      lastByte = lastByte + 256;
+    }
+    var blocks = (lastByte % 10) + 5;
+    console.log('[romantic] processImage: last byte:', lastByte, 'blocks:', blocks);
+    
+    // Calculate block height
+    var blockHeight = Math.floor(height / blocks);
+    console.log('[romantic] processImage: blockHeight:', blockHeight);
+    
+    // Descramble by reversing blocks
+    // Start from bottom block (block index blocks-1), which has remainder
+    var srcY = blockHeight * (blocks - 1);
+    var dstY = 0;
+    
+    var crops = [];
+    for (var i = 0; i < blocks; i++) {
+      // First iteration: remainder block (height - srcY)
+      // Other iterations: normal block (blockHeight)
+      var h = (i === 0) ? (height - srcY) : blockHeight;
+      
+      console.log('[romantic] processImage: block', i, 'srcY:', srcY, 'dstY:', dstY, 'height:', h);
+      
+      // Crop this block from source position
+      crops.push({
+        x: 0,
+        y: srcY,
+        width: width,
+        height: h,
+        dstY: dstY
+      });
+      
+      srcY -= blockHeight;
+      dstY += h;
+    }
+    
+    // Create descrambled image by composing crops
+    var descrambledData = imageData;
+    
+    // Process crops in sequence, building up the final image
+    for (var j = 0; j < crops.length; j++) {
+      var crop = crops[j];
+      console.log('[romantic] processImage: processing crop', j, '- x:', crop.x, 'y:', crop.y, 'w:', crop.width, 'h:', crop.height);
+      
+      // Crop the block from the scrambled image
+      var croppedData = runtime.image.crop(
+        j === 0 ? imageData : descrambledData, // First crop from original, then from partial result
+        crop.x,
+        crop.y,
+        crop.width,
+        crop.height
+      );
+      
+      if (j === 0) {
+        // First block becomes the base
+        descrambledData = croppedData;
+      } else {
+        // Subsequent blocks are composed vertically
+        descrambledData = runtime.image.composeVertical([descrambledData, croppedData]);
+      }
+    }
+    
+    console.log('[romantic] processImage: descrambling complete');
+    return { imageData: descrambledData };
+    
+  } catch (e) {
+    console.error('[romantic] processImage error:', e.message);
+    // If descrambling fails, return original image
+    return { imageData: imageData };
+  }
 }
 
 const module = {
@@ -424,7 +731,8 @@ const module = {
   getComicDetail,
   getEps,
   getPictures,
-  search
+  search,
+  processImage
 };
 
 if (typeof exports !== 'undefined') {
