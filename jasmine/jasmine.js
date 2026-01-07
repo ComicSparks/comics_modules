@@ -24,7 +24,7 @@ const moduleInfo = {
 
 // API 常量
 const DEFAULT_API_HOST = 'www.cdnplaystation6.vip';
-const DEFAULT_CDN_HOST = 'cdn-msp3.jmdanjonproxy.vip';
+const DEFAULT_CDN_HOST = 'www.cdnbea.net';
 const APP_VERSION = '1.6.8';
 const TOKEN_SECRET = '18comicAPPContent';
 const DATA_SECRET = '185Hcomic3PAPP7R';
@@ -784,7 +784,10 @@ const authForm = {
             type: 'select',
             label: '分流(CDN)',
             options: [
-                { label: DEFAULT_CDN_HOST, value: DEFAULT_CDN_HOST }
+                { label: 'www.cdnbea.net', value: 'www.cdnbea.net' },
+                { label: 'www.cdnhth.net', value: 'www.cdnhth.net' },
+                { label: 'www.cdngwc.cc', value: 'www.cdngwc.cc' },
+                { label: 'www.cdnhth.club', value: 'www.cdnhth.club' }
             ],
             allowCustom: true,
             placeholder: '自定义 CDN 域名或选择'
